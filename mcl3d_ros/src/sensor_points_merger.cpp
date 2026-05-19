@@ -2,133 +2,135 @@
  * mcl3d_ros: 3D Monte Carlo localization for ROS use
  * Copyright (C) 2023 Naoki Akai
  *
- * Licensed under the Apache License, Version 2.0 (the “License”);
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an “AS IS” BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- * @author Naoki Akai
  ****************************************************************************/
 
-#include <ros/ros.h>
-#include <sensor_msgs/PointCloud.h>
-#include <sensor_msgs/PointCloud2.h>
-#include <sensor_msgs/Imu.h>
-#include <sensor_msgs/point_cloud_conversion.h>
-#include <tf/transform_listener.h>
+#include <cmath>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include <geometry_msgs/msg/point32.hpp>
 #include <pcl/point_types.h>
-#include <pcl/PCLPointCloud2.h>
-#include <pcl/conversions.h>
-#include <pcl_ros/transforms.h>
 #include <pcl_conversions/pcl_conversions.h>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/point_cloud.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+
 #include <mcl3d_ros/Pose.h>
 
-class SensorPointsMerger {
+class SensorPointsMerger : public rclcpp::Node {
 private:
-    ros::NodeHandle nh_;
+    using PointCloud2Msg = sensor_msgs::msg::PointCloud2;
+
+    template<typename T>
+    T param(const std::string &name, const T &default_value) {
+        return this->declare_parameter<T>(name, default_value);
+    }
+
     std::string baseFrame_;
     std::vector<std::string> sensorFrames_, sensorTopicNames_;
-    std::vector<ros::Subscriber> pointsSubs_;
+    std::vector<rclcpp::Subscription<PointCloud2Msg>::SharedPtr> pointsSubs_;
     std::vector<mcl3d::Pose> displacements_;
     std::vector<bool> gotPoints_;
 
     std::string mergedPointsName_, mergedPointsFrame_;
-    ros::Publisher pointsPub_;
-    sensor_msgs::PointCloud mergedPoints_;
+    rclcpp::Publisher<PointCloud2Msg>::SharedPtr pointsPub_;
+    sensor_msgs::msg::PointCloud mergedPoints_;
 
-    tf::TransformListener tfListener_;
+    tf2_ros::Buffer tfBuffer_;
+    tf2_ros::TransformListener tfListener_;
 
 public:
     SensorPointsMerger(void):
-        nh_("~"),
+        Node("sensor_points_merger"),
         baseFrame_("base_link"),
-        sensorTopicNames_({"/cloud", "/cloud"}),
         sensorFrames_({"hokuyo3d_front", "hokuyo3d_rear"}),
-        gotPoints_({false, false}),
+        sensorTopicNames_({"/cloud", "/cloud"}),
         mergedPointsName_("/velodyne_points"),
-        mergedPointsFrame_("velodyne")
+        mergedPointsFrame_("velodyne"),
+        tfBuffer_(this->get_clock()),
+        tfListener_(tfBuffer_)
     {
-        nh_.param("base_frame", baseFrame_, baseFrame_);
-        nh_.param("sensor_frames", sensorFrames_, sensorFrames_);
-        nh_.param("sensor_topic_names", sensorTopicNames_, sensorTopicNames_);
+        baseFrame_ = param<std::string>("base_frame", baseFrame_);
+        sensorFrames_ = param<std::vector<std::string>>("sensor_frames", sensorFrames_);
+        sensorTopicNames_ = param<std::vector<std::string>>("sensor_topic_names", sensorTopicNames_);
+        mergedPointsName_ = param<std::string>("merged_points_name", mergedPointsName_);
+        mergedPointsFrame_ = param<std::string>("merged_points_frame", mergedPointsFrame_);
 
-        nh_.param("merged_points_name", mergedPointsName_, mergedPointsName_);
-        nh_.param("merged_points_frame", mergedPointsFrame_, mergedPointsFrame_);
+        if (sensorFrames_.size() != sensorTopicNames_.size()) {
+            RCLCPP_ERROR(this->get_logger(), "sensor_frames and sensor_topic_names must have the same length.");
+            throw std::runtime_error("sensor_frames and sensor_topic_names size mismatch");
+        }
+        gotPoints_.assign(sensorFrames_.size(), false);
 
-        // read transformations from TF tree
-        // printf("read transformations from TF tree\n");
-        for (int i = 0; i < (int)sensorFrames_.size(); ++i) {
-            tf::StampedTransform trans;
+        for (size_t i = 0; i < sensorFrames_.size(); ++i) {
+            geometry_msgs::msg::TransformStamped trans;
             int tfFailedCnt = 0;
-            ros::Rate loopRate(10.0);
-            while (ros::ok()) {
-                ros::spinOnce();
+            rclcpp::Rate loopRate(10.0);
+            while (rclcpp::ok()) {
                 try {
-                    ros::Time now = ros::Time::now();
-                    tfListener_.waitForTransform(baseFrame_, sensorFrames_[i], now, ros::Duration(1.0));
-                    tfListener_.lookupTransform(baseFrame_, sensorFrames_[i], now, trans);
+                    trans = tfBuffer_.lookupTransform(
+                        baseFrame_, sensorFrames_[i], tf2::TimePointZero,
+                        tf2::durationFromSec(1.0));
                     break;
-                } catch (tf::TransformException ex) {
+                } catch (const tf2::TransformException &ex) {
+                    (void)ex;
                     tfFailedCnt++;
                     if (tfFailedCnt >= 100) {
-                        ROS_ERROR("Cannot get the relative pose from the base link to the laser from the tf tree."
-                            " Did you set the static transform publisher between %s to %s?",
+                        RCLCPP_ERROR(this->get_logger(),
+                            "Cannot get the relative pose from %s to %s. Did you set the static transform publisher?",
                             baseFrame_.c_str(), sensorFrames_[i].c_str());
-                        exit(1);
+                        throw std::runtime_error("cannot get sensor transform");
                     }
                     loopRate.sleep();
                 }
             }
-            tf::Quaternion quat(trans.getRotation().x(), trans.getRotation().y(),
-                trans.getRotation().z(), trans.getRotation().w());
+
+            tf2::Quaternion quat(
+                trans.transform.rotation.x,
+                trans.transform.rotation.y,
+                trans.transform.rotation.z,
+                trans.transform.rotation.w);
             double roll, pitch, yaw;
-            tf::Matrix3x3 rotMat(quat);
-            rotMat.getRPY(roll, pitch, yaw);
-            mcl3d::Pose poseTrans(trans.getOrigin().x(), trans.getOrigin().y(), trans.getOrigin().z(), roll, pitch, yaw);
-            displacements_.push_back(poseTrans);
-        }
-        // printf("All the transformations have been obtained.\n");
-
-        // set subscribers
-        for (int i = 0; i < (int)sensorTopicNames_.size(); ++i) {
-            ros::Subscriber sub = nh_.subscribe(sensorTopicNames_[i], 1, &SensorPointsMerger::pointsCB, this);
-            pointsSubs_.push_back(sub);
+            tf2::Matrix3x3(quat).getRPY(roll, pitch, yaw);
+            displacements_.emplace_back(
+                trans.transform.translation.x,
+                trans.transform.translation.y,
+                trans.transform.translation.z,
+                roll, pitch, yaw);
         }
 
-        // set publisher
-        pointsPub_ = nh_.advertise<sensor_msgs::PointCloud2>(mergedPointsName_, 5);
+        for (size_t i = 0; i < sensorTopicNames_.size(); ++i) {
+            pointsSubs_.push_back(this->create_subscription<PointCloud2Msg>(
+                sensorTopicNames_[i], rclcpp::SensorDataQoS(),
+                [this, i](PointCloud2Msg::SharedPtr msg) { this->pointsCB(msg, i); }));
+        }
 
-        // make empty
+        pointsPub_ = this->create_publisher<PointCloud2Msg>(mergedPointsName_, 5);
         mergedPoints_.points.clear();
-        printf("Initialization has been done.\n");
+        RCLCPP_INFO(this->get_logger(), "Initialization has been done.");
     }
 
-    void pointsCB(const ros::MessageEvent<sensor_msgs::PointCloud2 const> &event) {
-        // check number of the sensor data
-        std::string topicName = event.getConnectionHeader().at("topic");
-        std::string frame = event.getMessage()->header.frame_id;
-        // printf("topicName = %s, frame = %s\n", topicName.c_str(), frame.c_str());
-        mcl3d::Pose poseTrans;
-        for (int i = 0; i < (int)sensorTopicNames_.size(); ++i) {
-            if (topicName == sensorTopicNames_[i] && frame == sensorFrames_[i]) {
-                // return return if already have
-                if (gotPoints_[i])
-                    return;
-                // add obtained points
-                poseTrans = displacements_[i];
-                gotPoints_[i] = true;
-                break;
-            }
+    void pointsCB(const PointCloud2Msg::SharedPtr msg, size_t sensorIndex) {
+        if (sensorIndex >= sensorFrames_.size()) {
+            return;
+        }
+        if (msg->header.frame_id != sensorFrames_[sensorIndex]) {
+            return;
+        }
+        if (gotPoints_[sensorIndex]) {
+            return;
         }
 
-        // transform and merge
+        mcl3d::Pose &poseTrans = displacements_[sensorIndex];
+        gotPoints_[sensorIndex] = true;
+
         double cr = cos(poseTrans.getRoll());
         double sr = sin(poseTrans.getRoll());
         double cp = cos(poseTrans.getPitch());
@@ -147,46 +149,54 @@ public:
         double m33 = cp * cr;
 
         pcl::PointCloud<pcl::PointXYZ> points;
-        pcl::fromROSMsg(*event.getMessage(), points);
+        pcl::fromROSMsg(*msg, points);
 
-        for (int i = 0; i < (int)points.size(); ++i) {
+        for (size_t i = 0; i < points.size(); ++i) {
             float x = points.points[i].x;
             float y = points.points[i].y;
             float z = points.points[i].z;
-            geometry_msgs::Point32 p;
+            geometry_msgs::msg::Point32 p;
             p.x = x * m11 + y * m12 + z * m13 + poseTrans.getX();
             p.y = x * m21 + y * m22 + z * m23 + poseTrans.getY();
             p.z = x * m31 + y * m32 + z * m33 + poseTrans.getZ();
             mergedPoints_.points.push_back(p);
         }
 
-        // check whether all the sensor data has been obtained
-        for (int i = 0; i < (int)gotPoints_.size(); ++i) {
-            if (!gotPoints_[i])
+        for (bool gotPoints : gotPoints_) {
+            if (!gotPoints) {
                 return;
+            }
         }
 
-        // publish the merged point cloud and make it empty for next publish
-        sensor_msgs::PointCloud2 sensorPoints;
-        sensor_msgs::convertPointCloudToPointCloud2(mergedPoints_, sensorPoints);
-        sensorPoints.header.stamp = ros::Time::now();
+        pcl::PointCloud<pcl::PointXYZ> mergedPcl;
+        mergedPcl.points.reserve(mergedPoints_.points.size());
+        for (const auto &point : mergedPoints_.points) {
+            mergedPcl.points.emplace_back(point.x, point.y, point.z);
+        }
+        mergedPcl.width = static_cast<uint32_t>(mergedPcl.points.size());
+        mergedPcl.height = 1;
+        mergedPcl.is_dense = false;
+
+        PointCloud2Msg sensorPoints;
+        pcl::toROSMsg(mergedPcl, sensorPoints);
+        sensorPoints.header.stamp = this->now();
         sensorPoints.header.frame_id = mergedPointsFrame_;
-        pointsPub_.publish(sensorPoints);
+        pointsPub_->publish(sensorPoints);
 
-        // printf("publish\n");
         mergedPoints_.points.clear();
-        for (int i = 0; i < (int)gotPoints_.size(); ++i)
-            gotPoints_[i] = false;
+        std::fill(gotPoints_.begin(), gotPoints_.end(), false);
     }
-
-    void spin(void) {
-        ros::spin();
-    }
-}; // class SensorPointsMerger
+};
 
 int main(int argc, char **argv) {
-    ros::init(argc, argv, "sensor_points_merger");
-    SensorPointsMerger node;
-    node.spin();
+    rclcpp::init(argc, argv);
+    try {
+        rclcpp::spin(std::make_shared<SensorPointsMerger>());
+    } catch (const std::exception &e) {
+        fprintf(stderr, "sensor_points_merger initialization failed: %s\n", e.what());
+        rclcpp::shutdown();
+        return 1;
+    }
+    rclcpp::shutdown();
     return 0;
 }

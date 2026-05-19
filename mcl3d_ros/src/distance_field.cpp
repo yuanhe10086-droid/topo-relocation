@@ -269,6 +269,10 @@ bool DistanceField::saveDistanceMap(void) {
 }
 
 bool DistanceField::loadDistanceMap(void) {
+    if (!isAvailable_) {
+        return false;
+    }
+
     std::string mapFilePath = rootDirName_ + mapFileName_;
     FILE *fp = fopen(mapFilePath.c_str(), "r");
     if (fp == NULL) {
