@@ -31,13 +31,13 @@ public:
     Pose(double x, double y, double z, double roll, double pitch, double yaw):
         x_(x), y_(y), z_(z), roll_(roll), pitch_(pitch), yaw_(yaw) {}
 
-    inline double getX(void) { return x_; }
-    inline double getY(void) { return y_; }
-    inline double getZ(void) { return z_; }
-    inline double getRoll(void) { return roll_; }
-    inline double getPitch(void) { return pitch_; }
-    inline double getYaw(void) { return yaw_; }
-    inline Pose getPose(void) { return Pose(x_, y_, z_, roll_, pitch_, yaw_); }
+    inline double getX(void) const { return x_; }
+    inline double getY(void) const { return y_; }
+    inline double getZ(void) const { return z_; }
+    inline double getRoll(void) const { return roll_; }
+    inline double getPitch(void) const { return pitch_; }
+    inline double getYaw(void) const { return yaw_; }
+    inline Pose getPose(void) const { return Pose(x_, y_, z_, roll_, pitch_, yaw_); }
 
     inline void setX(double x) { x_ = x; }
     inline void setY(double y) { y_ = y; }

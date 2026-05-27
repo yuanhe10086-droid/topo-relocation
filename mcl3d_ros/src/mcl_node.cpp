@@ -211,6 +211,21 @@ public:
         mcl_.setGMMPosVar(param<double>("gmm_postion_var", 0.3));
         mcl_.setGMMAngVar(param<double>("gmm_angle_var", 0.1));
 
+        // Structure-aware MCL 参数：默认关闭，打开后作为粒子权重的软先验项。
+        mcl3d::StructureMapParameters structureParams;
+        structureParams.bevResolution = param<double>("structure_bev_resolution", 0.3);
+        structureParams.voxelSize = param<double>("structure_voxel_size", 0.3);
+        structureParams.localRadius = param<double>("structure_local_radius", 6.0);
+        structureParams.candidateScoreThreshold = param<double>("structure_candidate_score_threshold", 0.35);
+        structureParams.candidateMinDistance = param<double>("structure_candidate_min_distance", 2.0);
+        structureParams.minRegionPoints = param<int>("structure_min_region_points", 30);
+        mcl_.setStructureMapParameters(structureParams);
+        mcl_.setUseStructureObservation(param<bool>("use_structure_observation", false));
+        mcl_.setUseStructureAdaptiveAlpha(param<bool>("use_structure_adaptive_alpha", true));
+        mcl_.setStructureAlpha(param<double>("structure_alpha", 0.5));
+        mcl_.setStructureSigma(param<double>("structure_sigma", 1.0));
+        mcl_.setStructureMinLikelihood(param<double>("structure_min_likelihood", 0.05));
+
         transformTolerance_ = param<double>("transform_tolerance", transformTolerance_);
         broadcastTF_ = param<bool>("broadcast_tf", broadcastTF_);
 
@@ -224,6 +239,10 @@ public:
         if (!mcl_.loadDistanceMap(mapYamlFile)) {
             RCLCPP_ERROR(this->get_logger(), "Cannot read map yaml file -> %s", mapYamlFile.c_str());
             throw std::runtime_error("cannot read map yaml file");
+        }
+        if (!mcl_.buildStructureMap()) {
+            RCLCPP_ERROR(this->get_logger(), "Cannot build structure prior map.");
+            throw std::runtime_error("cannot build structure map");
         }
 
         PointCloudMsg mapPointsMsg;
@@ -257,6 +276,8 @@ public:
 
         mcl_.updatePoses();
         auto start = std::chrono::system_clock::now();
+        // 在线结构观测 D_local 必须先于粒子权重更新生成。
+        mcl_.updateStructureObservation(sensorPoints);
         mcl_.calculateLikelihoodsByMeasurementModel(sensorPoints);
         mcl_.optimizeMeasurementModel(sensorPoints);
         mcl_.resampleParticles1();

@@ -55,7 +55,7 @@ set(ROS2_DEPS
   tf2_ros
 )
 
-add_executable(mcl src/mcl_node.cpp src/mcl.cpp src/distance_field.cpp src/imu.cpp)
+add_executable(mcl src/mcl_node.cpp src/mcl.cpp src/distance_field.cpp src/imu.cpp src/structure_map.cpp)
 ament_target_dependencies(mcl ${ROS2_DEPS})
 target_link_libraries(mcl ${PCL_LIBRARIES} ${YAMLCPP_LIBRARIES} OpenMP::OpenMP_CXX)
 

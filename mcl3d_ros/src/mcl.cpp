@@ -17,6 +17,8 @@
  * @author Naoki Akai
  ****************************************************************************/
 
+#include <algorithm>
+
 #include <mcl3d_ros/MCL.h>
 
 namespace mcl3d {
@@ -82,6 +84,14 @@ MCL::MCL(void):
     odomAvailable_ = false;
 
     imuAvailable_ = false;
+
+    useStructureObservation_ = false;
+    useStructureAdaptiveAlpha_ = true;
+    structureAlpha_ = 0.5;
+    structureSigma_ = 1.0;
+    structureMinLikelihood_ = 0.05;
+    latestStructureVector_.fill(0.0);
+    latestStructureVectorAvailable_ = false;
 }
 
 void MCL::setMeasurementModelParameters(double zHit, double zRand, double zMax,
@@ -106,6 +116,18 @@ void MCL::setMeasurementModelParameters(double zHit, double zRand, double zMax,
 bool MCL::loadDistanceMap(std::string mapYamlFile) {
     distMap_ = DistanceField(mapYamlFile);
     return distMap_.loadDistanceMap();
+}
+
+bool MCL::buildStructureMap(void) {
+    if (!useStructureObservation_)
+        return true;
+    // 地图加载完成后，从 distance map 中恢复出的地图点构建结构先验 D_map(x)。
+    bool ok = structureMap_.buildFromMapPoints(getMapPoints());
+    if (!ok)
+        fprintf(stderr, "Structure map construction failed or no structural regions were found.\n");
+    else
+        printf("Structure map has %d candidate structural regions.\n", structureMap_.getRegionCount());
+    return ok;
 }
 
 std::vector<Point> MCL::getMapPoints(void) {
@@ -420,6 +442,13 @@ void MCL::calculateLikelihoodsByMeasurementModel(pcl::PointCloud<pcl::PointXYZ>:
         // log sum is converted to the probability.
         double w = exp(particles_[i].getW());
         particles_[i].setW(w);
+    }
+
+    // w_i = L_lidar * L_structure^alpha，然后再统一归一化。
+    applyStructureWeights(&particles_);
+
+    for (int i = 0; i < particleNum_; ++i) {
+        double w = particles_[i].getW();
         sum += w;
         if (i == 0) {
             max = w;
@@ -476,6 +505,16 @@ void MCL::calculateLikelihoodsByMeasurementModel(pcl::PointCloud<pcl::PointXYZ>:
                 poseCov_[j][k] += w * diffs[j] * diffs[k];
         }
     }
+}
+
+void MCL::updateStructureObservation(pcl::PointCloud<pcl::PointXYZ>::Ptr sensorPoints) {
+    latestStructureVectorAvailable_ = false;
+    if (!useStructureObservation_ || !structureMap_.isAvailable())
+        return;
+
+    // 当前帧点云在这里生成 D_local；第一版不做 patch matching 或全局检索。
+    latestStructureVector_ = structureMap_.extractFromPointCloud(sensorPoints);
+    latestStructureVectorAvailable_ = true;
 }
 
 std::vector<std::vector<double>> MCL::addMatrix(std::vector<std::vector<double>> m1, std::vector<std::vector<double>> m2, int row, int col) {
@@ -950,6 +989,40 @@ void MCL::optimizeMeasurementModel(pcl::PointCloud<pcl::PointXYZ>::Ptr sensorPoi
     }
 }
 
+void MCL::applyStructureWeights(std::vector<Particle> *particles) {
+    if (!useStructureObservation_ || !structureMap_.isAvailable() || !latestStructureVectorAvailable_)
+        return;
+    if (particles == nullptr || particles->empty())
+        return;
+
+    double alpha = std::max(0.0, structureAlpha_);
+    if (alpha <= 0.0)
+        return;
+
+    if (useStructureAdaptiveAlpha_) {
+        double sum = 0.0;
+        double sum2 = 0.0;
+        for (const Particle &particle : *particles) {
+            sum += particle.getW();
+            sum2 += particle.getW() * particle.getW();
+        }
+        if (sum > 0.0 && sum2 > 0.0) {
+            // effectiveRatio 越接近 1，几何权重越均匀，说明几何观测区分度越弱。
+            const double effectiveRatio = (sum * sum / sum2) / static_cast<double>(particles->size());
+            alpha *= 0.3 + 1.7 * std::max(0.0, std::min(1.0, effectiveRatio));
+        }
+    }
+
+    const double minLikelihood = std::max(1.0e-9, std::min(1.0, structureMinLikelihood_));
+    for (Particle &particle : *particles) {
+        // 结构似然只调节权重；minLikelihood 防止结构项把粒子权重压成 0。
+        double likelihood = structureMap_.likelihood(
+            particle.getX(), particle.getY(), latestStructureVector_, structureSigma_);
+        likelihood = std::max(minLikelihood, std::min(1.0, likelihood));
+        particle.setW(particle.getW() * std::pow(likelihood, alpha));
+    }
+}
+
 void MCL::resampleParticles1(void) {
     // this function is used only when localization mode is particle filter
     if (localizationMode_ != 1)
@@ -1002,6 +1075,10 @@ void MCL::resampleParticles2(void) {
     // pose estimate and re-samping are not performed if scan matching has failed
     if (!optHasConverged_)
         return;
+
+    // fusion 模式中，标准粒子和优化采样粒子都接受同一个结构软权重项。
+    applyStructureWeights(&particles_);
+    applyStructureWeights(&optParticles_);
 
     // normalize weight
     double sum = 0.0;

@@ -33,15 +33,15 @@ public:
     Particle(double x, double y, double z, double roll, double pitch, double yaw, double w):
         pose_(x, y, z, roll, pitch, yaw), w_(w) {}
 
-    inline double getX(void) { return pose_.getX(); }
-    inline double getY(void) { return pose_.getY(); }
-    inline double getZ(void) { return pose_.getZ(); }
-    inline double getRoll(void) { return pose_.getRoll(); }
-    inline double getPitch(void) { return pose_.getPitch(); }
-    inline double getYaw(void) { return pose_.getYaw(); }
-    inline Pose getPose(void) { return pose_; }
-    inline double getW(void) { return w_; }
-    inline Particle getParticle(void) {
+    inline double getX(void) const { return pose_.getX(); }
+    inline double getY(void) const { return pose_.getY(); }
+    inline double getZ(void) const { return pose_.getZ(); }
+    inline double getRoll(void) const { return pose_.getRoll(); }
+    inline double getPitch(void) const { return pose_.getPitch(); }
+    inline double getYaw(void) const { return pose_.getYaw(); }
+    inline Pose getPose(void) const { return pose_; }
+    inline double getW(void) const { return w_; }
+    inline Particle getParticle(void) const {
         return Particle(pose_.getX(), pose_.getY(), pose_.getZ(), pose_.getRoll(), pose_.getPitch(), pose_.getYaw(), w_);
     }
 

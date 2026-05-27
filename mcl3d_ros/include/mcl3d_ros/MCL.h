@@ -31,6 +31,7 @@
 #include <mcl3d_ros/Particle.h>
 #include <mcl3d_ros/DistanceField.h>
 #include <mcl3d_ros/IMU.h>
+#include <mcl3d_ros/StructureMap.h>
 
 namespace mcl3d {
 
@@ -84,9 +85,19 @@ private:
 
     double effectiveSampleSize_;
 
+    StructureMap structureMap_;
+    bool useStructureObservation_;
+    // 自适应 alpha：几何权重退化时增强结构观测，几何可靠时减弱结构观测。
+    bool useStructureAdaptiveAlpha_;
+    double structureAlpha_, structureSigma_, structureMinLikelihood_;
+    // 当前帧局部观测提取的 D_local。
+    StructureMap::StructureVector latestStructureVector_;
+    bool latestStructureVectorAvailable_;
+
 public:
     MCL(void);
     bool loadDistanceMap(std::string mapYamlFile);
+    bool buildStructureMap(void);
     std::vector<Point> getMapPoints(void);
     void initializeParticles(Pose initialPose, Pose initialNoise);
     void initializeOptParticls(int optParticleNum);
@@ -96,6 +107,7 @@ public:
     void printMCLResult(void);
     void updatePoses(void);
     void calculateLikelihoodsByMeasurementModel(pcl::PointCloud<pcl::PointXYZ>::Ptr sensorPoints);
+    void updateStructureObservation(pcl::PointCloud<pcl::PointXYZ>::Ptr sensorPoints);
     void optimizeMeasurementModel(pcl::PointCloud<pcl::PointXYZ>::Ptr sensorPoints);
     void resampleParticles1(void);
     void resampleParticles2(void);
@@ -134,6 +146,12 @@ public:
     inline void setOptPoseCovCoef(double optPoseCovCoef) { optPoseCovCoef_ = optPoseCovCoef; }
     inline void setGMMPosVar(double gmmPosVar) { gmmPosVar_ = gmmPosVar; }
     inline void setGMMAngVar(double gmmAngVar) { gmmAngVar_ = gmmAngVar; }
+    inline void setUseStructureObservation(bool useStructureObservation) { useStructureObservation_ = useStructureObservation; }
+    inline void setUseStructureAdaptiveAlpha(bool useStructureAdaptiveAlpha) { useStructureAdaptiveAlpha_ = useStructureAdaptiveAlpha; }
+    inline void setStructureAlpha(double structureAlpha) { structureAlpha_ = structureAlpha; }
+    inline void setStructureSigma(double structureSigma) { structureSigma_ = structureSigma; }
+    inline void setStructureMinLikelihood(double structureMinLikelihood) { structureMinLikelihood_ = structureMinLikelihood; }
+    inline void setStructureMapParameters(StructureMapParameters params) { structureMap_.setParameters(params); }
 
 private:
     inline double nrand(double n) {
@@ -195,6 +213,8 @@ private:
     std::vector<std::vector<double>> CholeskyDecomposition(std::vector<std::vector<double>> mat);
     double getDeterminant(std::vector<std::vector<double>> mat, int n);
     double getError(float x, float y, float z, float r);
+    // 将结构似然作为软权重项乘到已有粒子权重上，不硬删除粒子。
+    void applyStructureWeights(std::vector<Particle> *particles);
 }; // class MCL
 
 } // namespace mcl3d

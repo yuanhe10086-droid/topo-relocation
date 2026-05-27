@@ -30,10 +30,10 @@ public:
     Point(void): x_(0.0), y_(0.0), z_(0.0) {}
     Point(double x, double y, double z): x_(x), y_(y), z_(z) {}
 
-    inline double getX(void) { return x_; }
-    inline double getY(void) { return y_; }
-    inline double getZ(void) { return z_; }
-    inline Point getPoint(void) { return Point(x_, y_, z_); }
+    inline double getX(void) const { return x_; }
+    inline double getY(void) const { return y_; }
+    inline double getZ(void) const { return z_; }
+    inline Point getPoint(void) const { return Point(x_, y_, z_); }
 
     inline void setX(double x) { x_ = x; }
     inline void setY(double y) { y_ = y; }
