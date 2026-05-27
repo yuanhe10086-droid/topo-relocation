@@ -85,21 +85,52 @@ source install/setup.bash
 
 ## 快速使用
 
-### 1. 构建距离场地图
+下面的命令假设工作区路径是：
 
-先准备目标环境的 `.pcd` 点云地图，然后运行：
+```bash
+/home/walli/topo_relocation_ws
+```
+
+如果你的工作区路径不同，把命令中的路径替换成自己的路径。
+
+### 1. source 工作区
+
+```bash
+cd /home/walli/topo_relocation_ws
+source install/setup.bash
+```
+
+### 2. 用自带 PCD 构建距离场地图
+
+仓库自带两个地图：
+
+| 文件 | 说明 |
+| --- | --- |
+| `data/map_mcl_3dl.pcd` | 轻量地图，约 3.8 万点，适合快速测试 |
+| `data/map_hdl.pcd` | 高密地图，约 204 万点，生成距离场更慢 |
+
+推荐先用轻量地图验证：
 
 ```bash
 ros2 launch mcl3d_ros pc_to_df.launch.py \
-  pcd_file:=/your/pcd/file.pcd \
-  yaml_file_path:=/your/yaml/dist_map.yaml \
-  map_file_name:=dist_map.bin
+  pcd_file:=/home/walli/topo_relocation_ws/src/mcl3d_ros/data/map_mcl_3dl.pcd \
+  yaml_file_path:=/home/walli/topo_relocation_ws/src/mcl3d_ros/data/dist_map_mcl_3dl.yaml \
+  map_file_name:=dist_map_mcl_3dl.bin \
+  resolution:=5.0 \
+  sub_map_resolution:=0.2 \
+  map_margin:=1.0
 ```
 
 该命令会生成：
 
-- `dist_map.bin`：距离场二进制地图；
-- `dist_map.yaml`：地图原点、尺寸、分辨率等元数据。
+- `/home/walli/topo_relocation_ws/src/mcl3d_ros/data/dist_map_mcl_3dl.yaml`：距离场地图元数据；
+- `/home/walli/topo_relocation_ws/src/mcl3d_ros/data/dist_map_mcl_3dl.bin`：距离场二进制地图。
+
+如果要用高密地图，把 `pcd_file` 换成：
+
+```text
+/home/walli/topo_relocation_ws/src/mcl3d_ros/data/map_hdl.pcd
+```
 
 也可以从 ROS 点云话题构建距离场：
 
@@ -107,26 +138,52 @@ ros2 launch mcl3d_ros pc_to_df.launch.py \
 ros2 launch mcl3d_ros pc_to_df.launch.py \
   from_pcd_file:=false \
   map_points_name:=/map_points \
-  yaml_file_path:=/your/yaml/dist_map.yaml \
-  map_file_name:=dist_map.bin
+  yaml_file_path:=/home/walli/topo_relocation_ws/src/mcl3d_ros/data/dist_map_from_topic.yaml \
+  map_file_name:=dist_map_from_topic.bin
 ```
 
 当前定位器只直接支持由 `pc_to_df` 生成的距离场地图格式。
 
-### 2. 运行定位
+### 3. 运行定位
+
+普通 MCL：
 
 ```bash
 ros2 launch mcl3d_ros mcl.launch.py \
-  map_yaml_file:=/your/yaml/dist_map.yaml
+  map_yaml_file:=/home/walli/topo_relocation_ws/src/mcl3d_ros/data/dist_map_mcl_3dl.yaml
 ```
 
-默认 LiDAR 输入话题是 `/velodyne_points`。
-
-### 3. RViz 可视化
+开启结构观测先验：
 
 ```bash
-rviz2 -d install/mcl3d_ros/share/mcl3d_ros/rviz/mcl3d_ros.rviz
+ros2 launch mcl3d_ros mcl.launch.py \
+  map_yaml_file:=/home/walli/topo_relocation_ws/src/mcl3d_ros/data/dist_map_mcl_3dl.yaml \
+  use_structure_observation:=true
 ```
+
+默认 LiDAR 输入话题是 `/velodyne_points`。正式定位时，这个话题必须来自真实 LiDAR、仿真传感器或 rosbag：
+
+```text
+/velodyne_points -> sensor_msgs/msg/PointCloud2
+```
+
+仅有全局地图不能完成真实定位；全局地图用于生成 `map_yaml_file`，当前点云用于在线观测更新。
+
+### 4. RViz 可视化
+
+```bash
+rviz2 -d /home/walli/topo_relocation_ws/src/mcl3d_ros/rviz/mcl3d_ros.rviz
+```
+
+RViz 中主要看：
+
+| 显示项 | 话题 | 含义 |
+| --- | --- | --- |
+| Sensor points | `/velodyne_points` | 当前 LiDAR 点云 |
+| DF map points | `/df_map_points` | 距离场中恢复的地图点 |
+| Particles | `/particles` | MCL 粒子 |
+| MCL pose | `/mcl_pose` | 当前定位结果 |
+| TF | `/tf` | `map`、`base_link`、`velodyne` 坐标关系 |
 
 ## 数据流
 
